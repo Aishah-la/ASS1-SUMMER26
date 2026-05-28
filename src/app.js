@@ -99,7 +99,14 @@ async function fetchUserProfile(url) {
  * - Must NOT store notifications (assume those are dynamic)
  */
 function saveSessionToStorage(profile) {
-  // TODO: implement
+  if (!profile || typeof profile !== "object') return;
+
+    const session = {
+      displayName: profile.displayName,
+      role: profile.role
+  };
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
 }
 
 /**
@@ -109,7 +116,21 @@ function saveSessionToStorage(profile) {
  * - Return object { displayName, role } if valid
  */
 function loadSessionFromStorage() {
-  // TODO: implement
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) return null;
+
+    const session = JSON.parse(data);
+
+    if (!session || typeof session !== "object" || Array.isArray(session)) return null;
+    if (typeof session.displayName !== "string" return null;
+    if (session.role !== "user" && session.role !== "admin") return null;
+
+    return {
+      displayName: session.displayName,
+      role: session.role
+    };
+} catch (_) {
   return null;
 }
 
@@ -128,7 +149,8 @@ function loadSessionFromStorage() {
  * client-side logic can be manipulated; real authorization is server-side.
  */
 function computeAccessStatus(profile) {
-  // TODO: implement
+  if (!profile || typeof profile !== "object") return "DENIED";
+  if (profile.role === "admin") return "GRANTED";
   return "DENIED";
 }
 
