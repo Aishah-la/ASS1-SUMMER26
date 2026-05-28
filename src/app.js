@@ -123,7 +123,7 @@ function loadSessionFromStorage() {
     const session = JSON.parse(data);
 
     if (!session || typeof session !== "object" || Array.isArray(session)) return null;
-    if (typeof session.displayName !== "string" return null;
+    if (typeof session.displayName !== "string") return null;
     if (session.role !== "user" && session.role !== "admin") return null;
 
     return {
