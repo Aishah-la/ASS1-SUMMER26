@@ -99,7 +99,7 @@ async function fetchUserProfile(url) {
  * - Must NOT store notifications (assume those are dynamic)
  */
 function saveSessionToStorage(profile) {
-  if (!profile || typeof profile !== "object') return;
+  if (!profile || typeof profile !== "object") return;
 
     const session = {
       displayName: profile.displayName,
