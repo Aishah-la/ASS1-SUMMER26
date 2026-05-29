@@ -101,7 +101,7 @@ async function fetchUserProfile(url) {
 function saveSessionToStorage(profile) {
   if (!profile || typeof profile !== "object") return;
 
-    const session = {
+  const session = {
       displayName: profile.displayName,
       role: profile.role
   };
@@ -130,8 +130,9 @@ function loadSessionFromStorage() {
       displayName: session.displayName,
       role: session.role
     };
-} catch (_) {
-  return null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /** -----------------------------
