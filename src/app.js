@@ -25,7 +25,18 @@ const STORAGE_KEY = "ssp_session_v1";
  * - use regex, not DOM APIs
  */
 function sanitizeUsername(input) {
-  return String(input).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 20); 
+  /*
+   * problem: User input is reflected into the DOM without any filtering, allowing
+   *   characters used in HTML and JavaScript syntax (e.g., <, >, ", ') to pass through.
+   * security impact: Cross-Site Scripting (XSS) — a crafted username containing script
+   *   tags or event handlers executes arbitrary code in the victim's browser, enabling
+   *   session cookie theft or full account takeover.
+   * solution: Allowlist regex — replace every character NOT in [A-Za-z0-9_-] with an
+   *   underscore, then slice to 20 characters. An allowlist is safer than a blocklist:
+   *   you define what is permitted and silently discard everything else.
+   */
+  if (typeof input !== "string") return "";
+  return input.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 20);
 }
 
 /**
@@ -37,15 +48,22 @@ function sanitizeUsername(input) {
  * - MUST use textContent (not innerHTML)
  */
 function renderNotifications(listEl, notifications) {
+  /*
+   * problem: Building list items with innerHTML passes untrusted strings directly to
+   *   the HTML parser, which will execute any embedded tags or event handlers.
+   * security impact: Stored XSS — one poisoned notification renders a script payload
+   *   for every executive who opens the dashboard, enabling cookie theft or session hijack.
+   * solution: Clear the container with innerHTML = "" (safe — no untrusted data involved),
+   *   then build each <li> via createElement and assign content with textContent.
+   *   textContent always treats the value as plain text, never as markup.
+   */
   listEl.innerHTML = "";
-
   if (!Array.isArray(notifications)) return;
-
-  for (const notification of notifications) {
+  notifications.forEach(function (msg) {
     const li = document.createElement("li");
-    li.textContent = String(notification);
+    li.textContent = msg;
     listEl.appendChild(li);
-  }
+  });
 }
 
 /** -----------------------------
@@ -67,20 +85,29 @@ function renderNotifications(listEl, notifications) {
  *   - notifications: array of strings
  */
 function parseProfileJson(jsonText) {
+  /*
+   * problem: Calling JSON.parse on untrusted input without error handling throws
+   *   a SyntaxError on malformed data, crashing the application. Accepting arbitrary
+   *   role values (e.g., "root", "superuser") also bypasses the intended role model.
+   * security impact: Denial of Service via crafted payloads that trigger uncaught
+   *   exceptions; privilege escalation via unsanctioned role strings.
+   * solution: Wrap JSON.parse in try/catch — any parse error returns null immediately.
+   *   After parsing, enforce a strict schema: each required field must exist with the
+   *   correct type, and role is validated against an explicit allowlist ("user" | "admin").
+   *   Any violation returns null — fail-closed by default.
+   */
   try {
-    const profile = JSON.parse(jsonText);
-
-    if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
-    if (typeof profile.displayName !== "string") return null;
-    if (profile.role !== "user" && profile.role !== "admin") return null;
-    if (!Array.isArray(profile.notifications)) return null;
-
-    for (const note of profile.notifications) {
-      if (typeof note !== "string") return null;
-    }
-
-    return profile;
-  } catch (_) {
+    const data = JSON.parse(jsonText);
+    if (typeof data.displayName !== "string") return null;
+    if (typeof data.role !== "string") return null;
+    if (data.role !== "user" && data.role !== "admin") return null;
+    if (!Array.isArray(data.notifications)) return null;
+    return {
+      displayName: data.displayName,
+      role: data.role,
+      notifications: data.notifications
+    };
+  } catch (e) {
     return null;
   }
 }
@@ -99,13 +126,22 @@ function parseProfileJson(jsonText) {
  * - Return parsed profile object or null
  */
 async function fetchUserProfile(url) {
+  /*
+   * problem: Ignoring HTTP error status codes or not catching network failures leaves
+   *   the UI in an undefined state and can surface stack traces with internal details.
+   *   Piping the raw response body directly into the DOM skips schema validation.
+   * security impact: Information leakage, application crash (DoS), and a pathway for
+   *   Man-in-the-Middle injected payloads to reach the DOM unvalidated.
+   * solution: try/catch handles network-level errors. response.ok guards against HTTP
+   *   error codes (4xx, 5xx). The body is read as raw text and handed to parseProfileJson,
+   *   which applies schema validation before any data is trusted. Any failure returns null.
+   */
   try {
-    const response = await fetch(url)
+    const response = await fetch(url);
     if (!response.ok) return null;
-
     const text = await response.text();
     return parseProfileJson(text);
-  } catch (_) {
+  } catch (e) {
     return null;
   }
 }
@@ -125,14 +161,21 @@ async function fetchUserProfile(url) {
  * - Must NOT store notifications (assume those are dynamic)
  */
 function saveSessionToStorage(profile) {
-  if (!profile || typeof profile !== "object") return;
-
-  const session = {
-      displayName: profile.displayName,
-      role: profile.role
+  /*
+   * problem: Serializing the full profile object (including notifications or future
+   *   sensitive fields) into localStorage persists more data than necessary, across
+   *   all browser sessions and any script that can read localStorage.
+   * security impact: Data minimization violation — an XSS payload or rogue third-party
+   *   script that reads localStorage gets more information than it should. Notifications
+   *   may contain PII or internal system messages.
+   * solution: Reconstruct a strict subset { displayName, role } before serializing.
+   *   This is the Principle of Least Privilege applied to client-side storage.
+   */
+  const subset = {
+    displayName: profile.displayName,
+    role: profile.role
   };
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(subset));
 }
 
 /**
@@ -142,21 +185,24 @@ function saveSessionToStorage(profile) {
  * - Return object { displayName, role } if valid
  */
 function loadSessionFromStorage() {
+  /*
+   * problem: localStorage values can be tampered with directly via DevTools or by
+   *   other scripts on the page. Passing the raw string to JSON.parse without error
+   *   handling crashes the app on any corrupted or crafted value.
+   * security impact: Application DoS via corrupted storage; blind trust of deserialized
+   *   data without type-checking enables client-side state spoofing.
+   * solution: try/catch around JSON.parse returns null on any failure. Type-check both
+   *   fields after parsing to reject partially valid objects. Note: the role value
+   *   returned here is client-side only and MUST be re-validated server-side before
+   *   granting any privileged access.
+   */
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    if (!data) return null;
-
-    const session = JSON.parse(data);
-
-    if (!session || typeof session !== "object" || Array.isArray(session)) return null;
-    if (typeof session.displayName !== "string") return null;
-    if (session.role !== "user" && session.role !== "admin") return null;
-
-    return {
-      displayName: session.displayName,
-      role: session.role
-    };
-  } catch (_) {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (typeof data.displayName !== "string" || typeof data.role !== "string") return null;
+    return { displayName: data.displayName, role: data.role };
+  } catch (e) {
     return null;
   }
 }
@@ -176,9 +222,20 @@ function loadSessionFromStorage() {
  * client-side logic can be manipulated; real authorization is server-side.
  */
 function computeAccessStatus(profile) {
-  if (!profile || typeof profile !== "object") return "DENIED";
-  if (profile.role === "admin") return "GRANTED";
-  return "DENIED";
+  /*
+   * problem: Missing guards for null profile or absent role property let attackers
+   *   craft inputs that cause a runtime error or produce an unexpected truthy result.
+   *   Loose equality (==) can be coerced — "admin" == true is false, but crafted
+   *   type coercions have historically bypassed similar checks.
+   * security impact: Privilege escalation on the client. Even frontend-only bypass
+   *   matters: it feeds the wrong UI state to users and may unlock client-gated actions.
+   * solution: Guard against null/undefined profile and non-string role, then use strict
+   *   identity (===) for the role comparison. Default return is "DENIED" (fail-closed).
+   *   CRITICAL: this is frontend logic only. The backend MUST independently validate
+   *   authorization on every request — the browser is never a trusted enforcement point.
+   */
+  if (!profile || typeof profile.role !== "string") return "DENIED";
+  return profile.role === "admin" ? "GRANTED" : "DENIED";
 }
 
 /** -----------------------------
